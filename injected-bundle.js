@@ -617,6 +617,61 @@ function debugLog(...args) {
 }
 
 
+// ------------------------------------------------- VR presentation helpers
+// While an immersive session is live the screen is a headset mirror: the
+// mouse cursor and the site's own player chrome only distract. These
+// helpers hide the cursor globally, optionally hide site-matched elements,
+// and focus/fullscreen the site's XR canvas.
+
+function vrPresentationApply(on) {
+  let sel = '';
+  try { sel = localStorage.getItem('rayneo-hide-ui') || ''; } catch (e) { /* noop */ }
+  let st = document.getElementById('rayneo-vr-presentation');
+  if (!on) {
+    if (st) st.remove();
+    return;
+  }
+  if (!st) {
+    st = document.createElement('style');
+    st.id = 'rayneo-vr-presentation';
+    (document.head || document.documentElement).appendChild(st);
+  }
+  st.textContent = '* { cursor: none !important; }'
+    + (sel ? sel + ' { display: none !important; }' : '');
+}
+
+// Persist (per-site) a CSS selector to hide while VR is active.
+// Usage: __rayneoHideUI('.player-controls, .site-header')  — pass no
+// argument to clear.
+window.__rayneoHideUI = function (selector) {
+  try {
+    if (selector) {
+      localStorage.setItem('rayneo-hide-ui', selector);
+      console.log('RayNeo: will hide "' + selector + '" on this site while VR is active (applies to new sessions; run __rayneoDiag style reload to test)');
+    } else {
+      localStorage.removeItem('rayneo-hide-ui');
+      console.log('RayNeo: per-site UI hiding cleared');
+    }
+  } catch (e) {
+    console.warn('RayNeo: localStorage unavailable:', e);
+  }
+};
+
+// Fullscreen the largest visible canvas (the site's XR renderer) so the
+// browser chrome and page UI drop away. Also runs automatically on session
+// start when the entry click's user-activation is still valid.
+window.__rayneoVRFocus = function () {
+  const canvases = [...document.querySelectorAll('canvas')]
+    .filter(c => c.offsetWidth && c.offsetHeight)
+    .sort((a, b) => (b.offsetWidth * b.offsetHeight) - (a.offsetWidth * a.offsetHeight));
+  const target = canvases[0] || document.documentElement;
+  if (target.requestFullscreen) {
+    return target.requestFullscreen().catch(e => {
+      console.log('RayNeo: fullscreen rejected:', e && e.message);
+    });
+  }
+};
+
 class RayNeoXRSession {
   constructor(mode, rayneo) {
     this.mode = mode;
@@ -642,6 +697,14 @@ class RayNeoXRSession {
     // ends (the site's normal playback must not stay split).
     if (this.isImmersive && this.rayneo.connected) {
       this.rayneo.setStereo(true).catch(() => {});
+    }
+
+    // Headset-mirror presentation: hide cursor/UI, try to fullscreen the
+    // site's XR canvas (works when the session start still carries the
+    // click's user activation; otherwise run __rayneoVRFocus() manually)
+    if (this.isImmersive) {
+      vrPresentationApply(true);
+      window.__rayneoVRFocus();
     }
 
     // Start frame loop
@@ -759,6 +822,11 @@ class RayNeoXRSession {
     // Restore the glasses' panel to 2D for normal desktop use
     if (this.isImmersive && this.rayneo.connected) {
       try { await this.rayneo.setStereo(false); } catch (e) { /* noop */ }
+    }
+    // Leave presentation mode: restore cursor/UI and browser chrome
+    if (this.isImmersive) {
+      vrPresentationApply(false);
+      if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
     }
     this._dispatchEvent('end', { session: this });
   }

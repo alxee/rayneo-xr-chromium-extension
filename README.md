@@ -94,6 +94,15 @@ Notes:
 - The video image itself is rendered by YouTube: a mono VR180 video looks mono because the *content* is mono, not because of the extension. The container's `StereoMode` element decides mono vs stereo per video.
 - For debugging: `__rayneoYouTubeVRInfo()` shows whether the current video is a VR projection.
 
+### Presentation mode (all immersive sites)
+
+When a WebXR session starts, the extension switches the glasses to SBS, hides the mouse cursor, and fullscreens the site's XR canvas (falling back to `__rayneoVRFocus()` in the console if the browser refuses automatic fullscreen). Cursor, site UI and browser chrome come back when the session ends. To also hide specific player chrome (controls, overlays), persist a CSS selector for that site:
+
+```js
+__rayneoHideUI('.player-controls, .overlay-banner')   // saved per-site
+__rayneoHideUI()                                      // clear
+```
+
 ### Other sites with VR players
 
 Some sites gate their spatial/VR UI behind their own headset checks (a WebXR availability probe and/or a VR-browser user-agent sniff) and offer no manual toggle. For those, the extension has a **per-site "VR mode"**:
