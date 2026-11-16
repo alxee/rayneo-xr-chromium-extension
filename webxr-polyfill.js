@@ -167,6 +167,7 @@ class RayNeoXRFrame {
 
   getViewerPose(referenceSpace) {
     if (!referenceSpace) return null;
+    this.session._frameCount = (this.session._frameCount || 0) + 1;
     if (!this.session._viewerPoseLogged) {
       this.session._viewerPoseLogged = true;
       console.log('[RayNeo polyfill] getViewerPose called - tracking is flowing to the app');
@@ -743,6 +744,17 @@ window.__rayneoDiag = function () {
     ? `w:${q.w.toFixed(2)} x:${q.x.toFixed(2)} y:${q.y.toFixed(2)} z:${q.z.toFixed(2)}`
     : 'n/a';
   console.log(`RayNeo diag: connected=${d.connected} reports=${d.reportsReceived} imuFrames=${d.imuFramesParsed} calibrated=${d.biasCalibrated} quaternion=${qs}`);
-  console.log('  -> run again while turning your head; quaternion must change');
+  // XR session status: how many sessions, and is the app's render loop
+  // actually pumping frames (frameCount should rise while you watch it)
+  const sess = globalXRSystem && globalXRSystem._sessions ? globalXRSystem._sessions.filter(s => !s.ended) : [];
+  sess.forEach((s, i) => {
+    const before = s._frameCount || 0;
+    setTimeout(() => {
+      const after = s._frameCount || 0;
+      console.log(`RayNeo xr session[${i}] mode=${s.mode} frames=${before}->${after} (+${(after - before) / 2}/s) stereo=${s.renderState.baseLayer ? 'baseLayer-set' : 'none'}`);
+    }, 2000);
+  });
+  console.log(`RayNeo xr sessions active: ${sess.length}`);
+  console.log('  -> frame counter measured over 2 s; ~60/s means the site render loop is running');
   return d;
 };
