@@ -170,6 +170,9 @@ Use Chrome, Edge, or Opera. Firefox and Safari don't support WebHID.
 - Try unplugging and reconnecting
 - On macOS, make sure no other app (RayNeoPin, etc.) is holding the HID interface
 
+### A site's player stalls or misbehaves when it "detects VR"
+The extension only advertises WebXR availability once the glasses are **connected on that tab** (with a small allowlist for known VR player sites like deovr.com, which need the answer before connecting). This prevents players that auto-enter VR mode on detection from hijacking normal playback. To use VR on a site: connect the glasses first, then reload the page.
+
 ### View rotates the wrong way or inverted
 The axis convention above comes from protocol research; if your unit disagrees (firmware differences exist), the fix is a constant pre-rotation in `rayneo-hid.js` — see the `_fuse()` pose step. Open an issue with the console log from `RAYNEO_DEBUG = true` in `rayneo-hid.js`.
 

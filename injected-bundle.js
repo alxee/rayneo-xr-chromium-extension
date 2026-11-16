@@ -1098,6 +1098,17 @@ function initRayNeoWebXR() {
   const originalXR = navigator.xr;
 
   // Create proxy XR system
+
+  // Sites whose players must see "VR available" even before the glasses are
+  // connected: they gate their entire VR UI on that check and never enter VR
+  // on their own. On other sites we must NOT advertise VR until the glasses
+  // are connected — some players (e.g. pornhub) detect a "headset" and
+  // auto-request a WebXR session, which hijacks/stalls their normal player.
+  const ALWAYS_OFFER_VR_HOSTS = ['deovr.com'];
+  const alwaysOfferVR = ALWAYS_OFFER_VR_HOSTS.some(
+    h => location.hostname === h || location.hostname.endsWith('.' + h)
+  );
+
   const proxyXR = {
     async isSessionSupported(mode) {
       const result = await this._isSessionSupportedInner(mode);
@@ -1117,11 +1128,13 @@ function initRayNeoWebXR() {
         return true;
       }
 
-      // For immersive-vr we can always start a session (the connect happens
-      // on request). This must be checked BEFORE falling back to the real
-      // navigator.xr, otherwise desktop Chrome's "false" wins and sites
-      // like DeoVR decide there is no headset at all.
-      if (mode === 'immersive-vr' && RayNeoHID.isSupported()) {
+      // For immersive-vr we can start a session (the connect happens on
+      // request) — but only where it is safe to advertise: on known VR
+      // player sites, or once the user has actually connected the glasses.
+      // This must be checked BEFORE falling back to the real navigator.xr,
+      // otherwise desktop Chrome's "false" wins and sites like DeoVR decide
+      // there is no headset at all.
+      if (mode === 'immersive-vr' && RayNeoHID.isSupported() && (alwaysOfferVR || globalRayNeo.connected)) {
         return true;
       }
 
@@ -1137,8 +1150,16 @@ function initRayNeoWebXR() {
       console.log('[RayNeo polyfill] requestSession("' + mode + '")', options || '');
       debugLog('RayNeo WebXR proxy: requestSession', mode, options);
 
-      // Prefer RayNeo for immersive-vr
+      // Prefer RayNeo for immersive-vr — but only where advertising VR was
+      // allowed (known VR sites) or the user explicitly connected the
+      // glasses on this page. Otherwise reject like a desktop without a
+      // headset would, instead of letting sites auto-enter VR.
       if (mode === 'immersive-vr') {
+        if (!alwaysOfferVR && !globalRayNeo.connected) {
+          debugLog('RayNeo WebXR proxy: refusing immersive-vr (no glasses connected on this site)');
+          const err = new Error('No RayNeo glasses connected on this site — connect via the extension popup first.');
+          return Promise.reject(err);
+        }
         debugLog('RayNeo WebXR proxy: Using RayNeo for immersive-vr');
         return globalXRSystem.requestSession(mode, options);
       }
