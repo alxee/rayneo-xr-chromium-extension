@@ -509,6 +509,23 @@ export function initRayNeoWebXR() {
   try { userForcedVR = localStorage.getItem('rayneo-vr-force') === '1'; } catch (e) { /* noop */ }
   const alwaysOfferVR = hostAllowlisted || userForcedVR;
 
+  // An authorized RayNeo device counts as "connected" for advertising and
+  // session purposes: after a page reload the driver re-opens the device
+  // asynchronously, but sites check isSessionSupported once at load —
+  // before reconnection finishes. Without this, sites conclude "no
+  // headset" and never re-check.
+  async function rayneoReady() {
+    if (globalRayNeo.connected) return true;
+    try {
+      const devices = await navigator.hid.getDevices();
+      return devices.some(d =>
+        RayNeoHID.VENDOR_IDS.includes(d.vendorId) && RayNeoHID.PRODUCT_IDS.includes(d.productId)
+      );
+    } catch (e) {
+      return false;
+    }
+  }
+
   const proxyXR = {
     async isSessionSupported(mode) {
       const result = await this._isSessionSupportedInner(mode);
@@ -522,9 +539,10 @@ export function initRayNeoWebXR() {
       if (window.__rayneoDisabled) {
         return mode === 'inline' && originalXR ? originalXR.isSessionSupported(mode) : false;
       }
-      // Check RayNeo first
-      const rayneoSupported = await globalXRSystem.isSessionSupported(mode);
-      if (rayneoSupported && globalRayNeo.connected) {
+      // Connected (or authorized, reconnecting) RayNeo device
+      const rayneoSupportsMode = await globalXRSystem.isSessionSupported(mode);
+      const rayneoReadyNow = await rayneoReady();
+      if (rayneoSupportsMode && rayneoReadyNow) {
         return true;
       }
 
@@ -555,7 +573,7 @@ export function initRayNeoWebXR() {
       // glasses on this page. Otherwise reject like a desktop without a
       // headset would, instead of letting sites auto-enter VR.
       if (mode === 'immersive-vr') {
-        if (!alwaysOfferVR && !globalRayNeo.connected) {
+        if (!alwaysOfferVR && !(await rayneoReady())) {
           debugLog('RayNeo WebXR proxy: refusing immersive-vr (no glasses connected on this site)');
           const err = new Error('No RayNeo glasses connected on this site — connect via the extension popup first.');
           return Promise.reject(err);
