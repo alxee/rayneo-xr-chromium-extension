@@ -16,6 +16,7 @@ const connectBtn = document.getElementById('connect-btn');
 const recenterBtn = document.getElementById('recenter-btn');
 const entervrBtn = document.getElementById('entervr-btn');
 const yttrackBtn = document.getElementById('yttrack-btn');
+const vrforceBtn = document.getElementById('vrforce-btn');
 const webhidWarning = document.getElementById('webhid-warning');
 
 // Check WebHID support
@@ -218,6 +219,23 @@ yttrackBtn.addEventListener('click', async () => {
     setTimeout(() => {
       if (label) label.textContent = 'YouTube tracking';
     }, 1000);
+  });
+});
+
+// Handle VR mode button (toggle per-site "always offer VR" + reload)
+vrforceBtn.addEventListener('click', async () => {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+
+  if (!canMessageTab(tab)) {
+    return;
+  }
+
+  chrome.tabs.sendMessage(tab.id, { type: 'VRFORCE_REQUEST' }, (response) => {
+    if (chrome.runtime.lastError) {
+      console.warn('Could not send VR mode request:', chrome.runtime.lastError.message);
+      return;
+    }
+    // The page toggles its localStorage flag and reloads itself
   });
 });
 

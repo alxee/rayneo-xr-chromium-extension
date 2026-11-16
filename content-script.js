@@ -101,6 +101,12 @@ try {
         window.postMessage({ type: 'RAYNEO_YTTRACK_REQUEST' }, '*');
         safeSendResponse(sendResponse, { success: true });
       }
+
+      if (message.type === 'VRFORCE_REQUEST') {
+        // Forward to page context to toggle per-site VR mode (reload follows)
+        window.postMessage({ type: 'RAYNEO_VRFORCE_REQUEST' }, '*');
+        safeSendResponse(sendResponse, { success: true });
+      }
     } catch (e) {
       // Extension context invalidated during message handling
     }

@@ -3,23 +3,28 @@
  * This runs in the page context and initializes the WebXR polyfill
  */
 
-// DeoVR headset gate: their webxr loader (webxr-init.js) decides "is there a
-// headset" purely by parsing navigator.userAgent for OculusBrowser/PicoBrowser
-// tokens (get_HMD returns NONE=0 for desktop UAs, regardless of what
-// navigator.xr reports). Spoof a Quest-3-like UA on deovr.com so their
-// immersive webxr path activates with our polyfill.
+// Headset-gate spoofing: some players decide "is there a headset" purely by
+// parsing navigator.userAgent for OculusBrowser/PicoBrowser tokens (DeoVR's
+// webxr loader is the known case: get_HMD returns NONE=0 for desktop UAs,
+// regardless of what navigator.xr reports), so their immersive path never
+// activates. Spoof a Quest-3-like UA automatically on DeoVR, and on any site
+// where the user enabled "VR mode" for this site (popup button or
+// __rayneoVRMode(); stored per-site in localStorage).
 (function () {
-  if (!/(^|\.)deovr\.com$/.test(location.hostname)) return;
+  let forced = false;
+  try { forced = localStorage.getItem('rayneo-vr-force') === '1'; } catch (e) { /* noop */ }
+  const deovrHost = /(^|\.)deovr\.com$/.test(location.hostname);
+  if (!deovrHost && !forced) return;
   const ua = navigator.userAgent;
   if (ua.includes('OculusBrowser') || ua.includes('PicoBrowser')) return;
   // Add "Quest 3" as the third platform token and append the OculusBrowser
-  // token: their get_HMD() maps platform token 3 + OculusBrowser -> QUEST_3
+  // token: DeoVR's get_HMD() maps platform token 3 + OculusBrowser -> QUEST_3
   const spoofed = ua.replace(/\(([^)]*)\)/, (m, inner) => `(${inner}; Quest 3)`)
     + ' OculusBrowser/20.1.0.0.137';
   try {
     Object.defineProperty(navigator, 'userAgent', { get: () => spoofed, configurable: true });
     Object.defineProperty(navigator, 'appVersion', { get: () => spoofed.replace('Mozilla/', ''), configurable: true });
-    console.log('RayNeo: spoofed UA for DeoVR headset detection (Quest 3)');
+    console.log('RayNeo: spoofed UA for headset detection (Quest 3)');
   } catch (e) {
     console.warn('RayNeo: could not override userAgent:', e);
   }
@@ -82,6 +87,14 @@ window.addEventListener('message', async (event) => {
       console.warn('RayNeo: YouTube tracking not available on this page');
     }
   }
+
+  if (data.type === 'RAYNEO_VRFORCE_REQUEST') {
+    // Toggle per-site "VR mode" (make the site always see a headset), then
+    // reload so the site's player re-runs its detection from scratch
+    if (typeof window.__rayneoVRMode === 'function') {
+      window.__rayneoVRMode();
+    }
+  }
 });
 
 // Request initial state
@@ -114,6 +127,20 @@ window.recenterRayNeo = function() {
   } else {
     console.error('RayNeo not connected');
   }
+};
+
+// Toggle per-site "VR mode": makes this site always see a headset
+// (isSessionSupported('immersive-vr') -> true and a Quest-like UA), even
+// before the glasses are connected. Takes effect after an automatic reload.
+window.__rayneoVRMode = function () {
+  let on = false;
+  try { on = localStorage.getItem('rayneo-vr-force') === '1'; } catch (e) { /* noop */ }
+  try { localStorage.setItem('rayneo-vr-force', on ? '0' : '1'); } catch (e) {
+    console.error('RayNeo: cannot write localStorage on this page:', e);
+    return;
+  }
+  console.log('RayNeo: VR mode for this site ' + (on ? 'disabled' : 'enabled') + ' - reloading...');
+  setTimeout(() => location.reload(), 400);
 };
 
 // Log availability

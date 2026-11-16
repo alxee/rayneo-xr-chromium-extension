@@ -500,9 +500,14 @@ export function initRayNeoWebXR() {
   // are connected — some players (e.g. pornhub) detect a "headset" and
   // auto-request a WebXR session, which hijacks/stalls their normal player.
   const ALWAYS_OFFER_VR_HOSTS = ['deovr.com'];
-  const alwaysOfferVR = ALWAYS_OFFER_VR_HOSTS.some(
+  const hostAllowlisted = ALWAYS_OFFER_VR_HOSTS.some(
     h => location.hostname === h || location.hostname.endsWith('.' + h)
   );
+  // Per-site opt-in set by the user (popup "VR mode on this site" button or
+  // the __rayneoVRMode() console command); stored in the site's localStorage.
+  let userForcedVR = false;
+  try { userForcedVR = localStorage.getItem('rayneo-vr-force') === '1'; } catch (e) { /* noop */ }
+  const alwaysOfferVR = hostAllowlisted || userForcedVR;
 
   const proxyXR = {
     async isSessionSupported(mode) {

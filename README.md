@@ -94,6 +94,16 @@ Notes:
 - The video image itself is rendered by YouTube: a mono VR180 video looks mono because the *content* is mono, not because of the extension. The container's `StereoMode` element decides mono vs stereo per video.
 - For debugging: `__rayneoYouTubeVRInfo()` shows whether the current video is a VR projection.
 
+### Other sites with VR players
+
+Some sites gate their spatial/VR UI behind their own headset checks (a WebXR availability probe and/or a VR-browser user-agent sniff) and offer no manual toggle. For those, the extension has a **per-site "VR mode"**:
+
+- Click **"VR mode on this site (toggle)"** in the popup (or run `__rayneoVRMode()` in the page console)
+- This makes the site always see a headset available (WebXR reported as supported, Quest-like user-agent), regardless of whether the glasses are currently connected, and reloads the page
+- The setting is per-site (stored in that site's localStorage); run the toggle again to turn it off
+
+Use it only on sites where you want VR; normal playback is unaffected on sites without the flag.
+
 ### DeoVR and other WebXR players
 
 The polyfill presents the glasses as a standard WebXR device, so any site using **WebXR `immersive-vr`** sessions can go full-immersive — WebXR samples, A-Frame and Three.js demos (verified), and DeoVR's web player. Not supported: WebVR 1.1-only sites, plain `deviceorientation`-based viewers, or 6DoF/controller experiences.
