@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "RayNeo WebXR",
   "version": "1.0.0",
-  "description": "Enables WebXR head tracking support for RayNeo (TCL) AR glasses on any website",
+  "description": "Enables WebXR support for RayNeo glasses on any website",
   "author": "Port of bfvogel/viture-webxr-extension",
 
   "permissions": [

@@ -49,6 +49,9 @@ window.addEventListener('message', async (event) => {
   if (data.type === 'RAYNEO_STATE_CHANGED') {
     // Respect the popup's enable toggle even though we load statically
     window.__rayneoDisabled = !(data.state && data.state.enabled);
+    // Popup toggle: whether the extension may switch the glasses' display
+    // mode (SBS <-> 2D) automatically around VR sessions
+    window.__rayneoAutoModeSwitch = !data.state || data.state.autoModeSwitch !== false;
     if (window.__rayneoDisabled) {
       console.log('RayNeo WebXR disabled');
     }
@@ -93,6 +96,19 @@ window.addEventListener('message', async (event) => {
     // reload so the site's player re-runs its detection from scratch
     if (typeof window.__rayneoVRMode === 'function') {
       window.__rayneoVRMode();
+    }
+  }
+
+  if (data.type === 'RAYNEO_RESTORE_2D_REQUEST') {
+    // Switch the glasses back to 2D - used when the tab that presented VR
+    // content was closed (its session never ended). Any page holding the
+    // persistent WebHID grant for the device can do this.
+    if (typeof window.__rayneoRestore2D === 'function') {
+      window.__rayneoRestore2D().then((success) => {
+        window.postMessage({ type: 'RAYNEO_RESTORE_2D_RESULT', success }, '*');
+      }).catch(() => {
+        window.postMessage({ type: 'RAYNEO_RESTORE_2D_RESULT', success: false }, '*');
+      });
     }
   }
 });

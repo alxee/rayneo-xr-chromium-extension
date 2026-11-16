@@ -153,10 +153,68 @@ export class RayNeoHID {
     // Output report IDs to try (0x00 = unnumbered, then common vendor IDs)
     this._outputReportIds = [0x00, 0x66];
 
+    // Desired display mode (true = side-by-side stereo). Kept in the driver
+    // so the mode can be re-asserted when the glasses wake from sleep or when
+    // a mode command races the display controller's initialization.
+    this._stereoOn = false;
+    this._stereoTimers = [];
+
     // Diagnostics counters
     this._reportCount = 0;
     this._imuCount = 0;
     this._lastUnparsedHex = '';
+
+    // Watch for the glasses being plugged in / unplugged so connection state
+    // stays truthful everywhere (extension popup, polyfill, sites). The
+    // 'connect'/'disconnect' events fire for devices this page holds a
+    // persistent WebHID grant for - i.e. once the user has authorized the
+    // glasses. Without these, the popup only learns about (dis)connects that
+    // happen through this page's own connect()/disconnect() calls.
+    if (RayNeoHID.isSupported()) {
+      navigator.hid.addEventListener('connect', (event) => {
+        if (!this._isRayneoDevice(event.device)) return;
+        debugLog('RayNeo: glasses plugged in');
+        if (!this.connected) {
+          // Re-open with the existing (persistent) grant - no gesture needed
+          this.checkExistingConnection().catch(() => {});
+        }
+      });
+      navigator.hid.addEventListener('disconnect', (event) => {
+        if (!this._isRayneoDevice(event.device)) return;
+        debugLog('RayNeo: glasses unplugged');
+        if (this.connected) {
+          this._markDisconnected();
+        }
+      });
+    }
+
+    // Last-resort display restore: when this page goes away (tab closed or
+    // navigated), its XR session is destroyed without end() running and the
+    // glasses would be left in side-by-side mode. Fire the 2D command without
+    // awaiting - the browser may or may not flush it before the HID
+    // connection is torn down. The extension's tab-close tracking
+    // (background.js) is the reliable path.
+    window.addEventListener('pagehide', () => {
+      if (!this.connected) return;
+      if (window.__rayneoAutoModeSwitch !== false) {
+        this._sendCommand(0x07).catch(() => {}); // 2D display
+      }
+      this._sendCommand(0x02).catch(() => {}); // IMU off
+    });
+
+    // Answer "are the glasses connected on this page?" queries from the
+    // extension: the background service worker loses its in-memory state
+    // whenever Chrome stops it (MV3), so the popup reconciles against pages.
+    window.addEventListener('message', (event) => {
+      if (event.source !== window) return;
+      if (event.data && event.data.type === 'RAYNEO_GET_DEVICE_STATE') {
+        window.postMessage({
+          type: 'RAYNEO_DEVICE_STATE_RESPONSE',
+          connected: this.connected,
+          deviceInfo: this.connected ? this._getDeviceInfo() : null
+        }, '*');
+      }
+    });
   }
 
   static isSupported() {
@@ -165,6 +223,55 @@ export class RayNeoHID {
 
   _matches(device) {
     return RAYNEO_VIDS.includes(device.vendorId) && device.productId === RAYNEO_PID;
+  }
+
+  _isRayneoDevice(device) {
+    return !!device && RAYNEO_VIDS.includes(device.vendorId) && device.productId === RAYNEO_PID;
+  }
+
+  // Stop tracking the glasses and tell the extension they are gone (physical
+  // unplug or dropped device). The popup and sites update via the
+  // DEVICE_DISCONNECTED message chain.
+  _markDisconnected() {
+    if (this._watchdog) {
+      clearInterval(this._watchdog);
+      this._watchdog = null;
+    }
+    // Cancel pending stereo re-asserts: the session that requested SBS lost
+    // the glasses, so it must not re-enable SBS after a reconnect
+    for (const t of this._stereoTimers) clearTimeout(t);
+    this._stereoTimers = [];
+    this._stereoOn = false;
+    this.device = null;
+    this._allDevices = null;
+    this.connected = false;
+    this._imuOn = false;
+    // Force fresh IMU init / gyro-bias calibration when the glasses return
+    this._initialized = false;
+    this._calibrated = false;
+
+    window.postMessage({ type: 'RAYNEO_DEVICE_DISCONNECTED' }, '*');
+  }
+
+  // After a fresh connection, make sure the panel is in normal 2D mode: a
+  // previous session's page may have gone away without end() running (tab
+  // closed / navigated), leaving the glasses in side-by-side mode. Skipped
+  // when another tab is currently presenting VR content (the extension
+  // reports which tabs have a live immersive session).
+  _reset2DIfIdle() {
+    const onStatus = (event) => {
+      if (event.source !== window) return;
+      if (!event.data || event.data.type !== 'RAYNEO_VR_STATUS_RESPONSE') return;
+      window.removeEventListener('message', onStatus);
+      clearTimeout(timeout);
+      if (!event.data.active && window.__rayneoAutoModeSwitch !== false) {
+        debugLog('RayNeo: no VR session active anywhere - resetting display to 2D');
+        this._sendCommand(0x07).catch(() => {});
+      }
+    };
+    const timeout = setTimeout(() => window.removeEventListener('message', onStatus), 1000);
+    window.addEventListener('message', onStatus);
+    window.postMessage({ type: 'RAYNEO_GET_VR_STATUS' }, '*');
   }
 
   async connect() {
@@ -216,6 +323,9 @@ export class RayNeoHID {
       deviceInfo: this._getDeviceInfo()
     }, '*');
 
+    // Fresh connection: leave the panel in normal 2D until a session starts
+    this._reset2DIfIdle();
+
     return this._getDeviceInfo();
   }
 
@@ -226,9 +336,18 @@ export class RayNeoHID {
     frame[1] = cmd;
     frame[2] = value;
 
+    let sent = false;
     for (const device of devices) {
-      if (!device.opened) continue;
-      let sent = false;
+      // (Re)open lazily: after a replug or a failed open during connect, the
+      // handles can be closed even though the device object is still
+      // authorized - without this the command would be silently dropped
+      if (!device.opened) {
+        try {
+          await device.open();
+        } catch (e) {
+          continue;
+        }
+      }
       // Try the documented layout first (report ID 0), then alternatives for
       // hosts/devices that number their reports
       for (const reportId of this._outputReportIds) {
@@ -243,16 +362,23 @@ export class RayNeoHID {
           debugLog(`RayNeo: sendReport(id 0x${reportId.toString(16)}, 0x${cmd.toString(16)}) failed:`, e.message);
         }
       }
-      if (!sent) {
-        console.warn(`RayNeo: could not send command 0x${cmd.toString(16)} to any report ID`);
-      }
     }
+    if (!sent && devices.length > 0) {
+      console.warn(`RayNeo: could not send command 0x${cmd.toString(16)} to any device/report ID`);
+    }
+    return sent;
   }
 
   async _startIMU() {
     console.log('RayNeo: Sending IMU enable command (0x66 0x01)...');
     this._imuOn = true;
     await this._sendCommand(0x01); // IMU on
+    // (Re)connect can reset the display controller: re-assert the mode a live
+    // session put the panel in (only set when a session requested stereo and
+    // the glasses have not dropped off since)
+    if (this._stereoOn) {
+      this._sendCommand(0x06);
+    }
     this._lastReportTime = performance.now();
 
     // Watchdog: the stream stops after the glasses sleep; ask again.
@@ -261,6 +387,10 @@ export class RayNeoHID {
       if (!this.connected) return;
       if (performance.now() - this._lastReportTime > 1500) {
         this._sendCommand(0x01);
+        // A wake cycle may have reset the display mode too
+        if (this._stereoOn) {
+          this._sendCommand(0x06);
+        }
         if (!this._watchWarned) {
           this._watchWarned = true;
           console.warn('RayNeo: no IMU data received after connecting - re-sending IMU enable. ' +
@@ -307,6 +437,9 @@ export class RayNeoHID {
       deviceInfo: this._getDeviceInfo()
     }, '*');
 
+    // Fresh connection: leave the panel in normal 2D until a session starts
+    this._reset2DIfIdle();
+
     return true;
   }
 
@@ -329,20 +462,39 @@ export class RayNeoHID {
         }
       }
     }
-    this.device = null;
-    this._allDevices = null;
-    this.connected = false;
-    this._imuOn = false;
-
-    window.postMessage({ type: 'RAYNEO_DEVICE_DISCONNECTED' }, '*');
+    // Clear state and notify the extension (popup status, sites)
+    this._markDisconnected();
   }
 
   // Display helpers ----------------------------------------------------------
 
   /** Put the glasses in 3840x1080 side-by-side mode (needed for stereo WebXR
-   *  content to appear correctly). Pass false to switch back to 2D. */
+   *  content to appear correctly). Pass false to switch back to 2D.
+   *
+   *  The mode command is re-asserted a few times over ~1.5 s: right after a
+   *  fresh connection the display controller may still be initializing (or
+   *  the glasses just woke from sleep) and a single command can be missed.
+   *  Re-sending the same mode is harmless, and a later setStereo() call
+   *  cancels pending re-asserts - so a session end always wins. */
   async setStereo(on) {
-    await this._sendCommand(on ? 0x06 : 0x07);
+    // "Auto mode switch" disabled in the popup: the user controls the panel
+    // mode themselves (e.g. with the glasses' own controls). Explicit manual
+    // calls (console __rayneoRestore2D) still work.
+    if (window.__rayneoAutoModeSwitch === false) return;
+
+    this._stereoOn = !!on;
+    for (const t of this._stereoTimers) clearTimeout(t);
+    this._stereoTimers = [];
+
+    const cmd = on ? 0x06 : 0x07;
+    const reassert = () => {
+      if (this.connected) this._sendCommand(cmd);
+    };
+
+    await this._sendCommand(cmd);
+    for (const delay of [250, 700, 1500, 2500]) {
+      this._stereoTimers.push(setTimeout(reassert, delay));
+    }
   }
 
   /** Panel refresh rate: 60 or 120 Hz. */
@@ -416,12 +568,16 @@ export class RayNeoHID {
 
   _handleAck(bytes, off) {
     // Ack frames; byte off+8 carries sleep (0x41) / wake (0x42) notices on
-    // some firmware. On wake, restart the IMU stream.
+    // some firmware. On wake, restart the IMU stream and re-assert the
+    // display mode (a wake cycle can reset the display controller).
     const b = bytes[off + 8];
     if (b === 0x42 && !this._imuOn) {
       debugLog('RayNeo: glasses woke up, restarting IMU');
       this._imuOn = true;
       this._sendCommand(0x01);
+      if (this._stereoOn) {
+        this._sendCommand(0x06);
+      }
     } else if (b === 0x41) {
       this._imuOn = false;
     }
@@ -594,5 +750,50 @@ export class RayNeoHID {
   }
 }
 
+// Restore the glasses to normal 2D viewing from any page that holds the
+// persistent WebHID grant (the site the glasses were connected on). Used by
+// the extension after the tab that was playing VR content was closed: that
+// page's session is destroyed without end() running, so nothing switched the
+// panel out of side-by-side mode.
+async function restoreRayNeo2D() {
+  if (!RayNeoHID.isSupported()) return false;
+
+  let granted;
+  try {
+    granted = await navigator.hid.getDevices();
+  } catch (e) {
+    return false;
+  }
+
+  let restored = false;
+  for (const device of granted) {
+    if (!RAYNEO_VIDS.includes(device.vendorId) || device.productId !== RAYNEO_PID) continue;
+    try {
+      if (!device.opened) await device.open();
+      const frame = new Uint8Array(64);
+      frame[0] = 0x66;
+      frame[1] = 0x07; // 2D display mode
+      frame[2] = 0;
+      let sent = false;
+      for (const reportId of [0x00, 0x66]) {
+        try {
+          await device.sendReport(reportId, frame);
+          sent = true;
+          break;
+        } catch (e) { /* try the next report id */ }
+      }
+      if (sent) restored = true;
+      try { await device.close(); } catch (e) { /* noop */ }
+    } catch (e) {
+      // Cannot open (another page holds it open, glasses absent, ...)
+    }
+  }
+  if (restored) {
+    console.log('RayNeo: display restored to normal 2D mode');
+  }
+  return restored;
+}
+
 // Make available globally in page context
 window.RayNeoHID = RayNeoHID;
+window.__rayneoRestore2D = restoreRayNeo2D;

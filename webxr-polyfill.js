@@ -67,6 +67,46 @@ window.__rayneoVRFocus = function () {
   }
 };
 
+// After the SBS command the OS needs a moment to re-arrange the glasses
+// display (1920x1080 -> 3840x1080). If the session - and with it the
+// fullscreen - starts during that window, it opens as a 1920-wide screen and
+// the stereo image comes up squeezed. Wait until the screen geometry reflects
+// the new mode before resolving; the site's requestSession() (and everything
+// it does afterwards, including its own fullscreen) only continues then.
+function settleDisplayAfterModeChange(baselineWidth) {
+  // Already in a wide arrangement (re-entering VR, or the glasses always
+  // report the wide mode): nothing to wait for
+  if (screen.width >= 3000) return Promise.resolve();
+
+  const CAP_MS = 3000;    // observed transitions take up to ~2-3 s
+  const start = performance.now();
+
+  function poll() {
+    // Mode change observed: give the compositor a beat to apply the new
+    // geometry, then let the session start
+    if (screen.width !== baselineWidth && screen.width > 0) {
+      return new Promise((resolve) => setTimeout(resolve, 300));
+    }
+    if (performance.now() - start >= CAP_MS) {
+      // Cannot observe the change (e.g. the window sits on another screen).
+      // Don't stall VR entry forever - the panel command itself has had the
+      // full cap to take effect by now.
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => setTimeout(resolve, 100)).then(poll);
+  }
+
+  return poll();
+}
+
+// While the glasses' display transition is pending (SBS command sent, OS
+// still re-arranging), players that fullscreen themselves on VR entry would
+// open a 1920-wide fullscreen and render the stereo image squeezed. Defer
+// their requestFullscreen() calls until the transition completes.
+let displaySettling = false;
+let displaySettledOnce = false;
+let settlingBaselineWidth = 0;
+
 class RayNeoXRSession {
   constructor(mode, rayneo) {
     this.mode = mode;
@@ -92,6 +132,10 @@ class RayNeoXRSession {
     // ends (the site's normal playback must not stay split).
     if (this.isImmersive && this.rayneo.connected) {
       this.rayneo.setStereo(true).catch(() => {});
+      // Register this tab as "presenting VR content" with the extension: if
+      // the tab is closed without the session ending, the extension switches
+      // the glasses back to 2D (see background.js tab-close handling).
+      window.postMessage({ type: 'RAYNEO_VR_SESSION_STARTED' }, '*');
     }
 
     // Headset-mirror presentation: hide cursor/UI, try to fullscreen the
@@ -192,6 +236,21 @@ class RayNeoXRSession {
 
       this._animationFrameId = requestAnimationFrame(loop);
 
+      // Keep the drawing buffer at the native SBS size: sites may resize
+      // their canvas mid-session from stale window geometry (e.g. on the
+      // fullscreen resize event), which would shrink each eye back to a
+      // quarter of the panel
+      const layer = this._layer;
+      if (layer) {
+        const canvas = layer.context.canvas;
+        if (canvas.width !== layer._framebufferWidth || canvas.height !== layer._framebufferHeight) {
+          try {
+            canvas.width = layer._framebufferWidth;
+            canvas.height = layer._framebufferHeight;
+          } catch (e) { /* site owns the canvas; keep its size */ }
+        }
+      }
+
       // Create XRFrame
       const frame = new RayNeoXRFrame(this, timestamp);
 
@@ -222,6 +281,9 @@ class RayNeoXRSession {
     if (this.isImmersive) {
       vrPresentationApply(false);
       if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+      // Normal exit path: the panel is back in 2D, so the extension no longer
+      // needs to watch this tab for a close-while-in-SBS situation
+      window.postMessage({ type: 'RAYNEO_VR_SESSION_ENDED' }, '*');
     }
     this._dispatchEvent('end', { session: this });
   }
@@ -450,6 +512,14 @@ class RayNeoXRRigidTransform {
 /**
  * XRWebGLLayer polyfill for RayNeo sessions
  */
+// Native SBS panel layout of the RayNeo Air glasses: 3840x1080 total,
+// 1920x1080 per eye. Immersive sessions always render side-by-side stereo,
+// so the drawing buffer must match this regardless of what resolution the
+// OS currently drives the panel at (the display mode can lag the panel
+// switch by a second or more).
+const SBS_FRAMEBUFFER_WIDTH = 3840;
+const SBS_FRAMEBUFFER_HEIGHT = 1080;
+
 class RayNeoXRWebGLLayer {
   constructor(session, context, options = {}) {
     this.session = session;
@@ -458,6 +528,22 @@ class RayNeoXRWebGLLayer {
 
     // Get canvas dimensions
     const canvas = context.canvas;
+
+    // Immersive session: the site sizes its canvas from window geometry that
+    // can be stale (captured before the display switched to the wide/SBS
+    // arrangement, or while the window was still on another screen) - the
+    // stereo image then renders 1920-wide and each eye ends up squeezed into
+    // a quarter of the panel. Force the drawing buffer to the panel's native
+    // SBS size and keep it enforced for the session's lifetime (frame loop).
+    if (session.isImmersive) {
+      try {
+        canvas.width = SBS_FRAMEBUFFER_WIDTH;
+        canvas.height = SBS_FRAMEBUFFER_HEIGHT;
+      } catch (e) { /* site owns the canvas; keep its size */ }
+      // Make the layer reachable from the frame loop for re-enforcement
+      session._layer = this;
+    }
+
     this._framebufferWidth = canvas.width;
     this._framebufferHeight = canvas.height;
 
@@ -658,6 +744,35 @@ export function initRayNeoWebXR() {
           const err = new Error('No RayNeo glasses connected on this site — connect via the extension popup first.');
           return Promise.reject(err);
         }
+        // Connect first (if needed) so the display mode switch starts as
+        // early as possible
+        if (!globalRayNeo.connected) {
+          try {
+            await globalRayNeo.checkExistingConnection();
+          } catch (e) { /* fall through */ }
+          if (!globalRayNeo.connected) {
+            try {
+              await globalRayNeo.connect();
+            } catch (e) {
+              debugLog('RayNeo WebXR proxy: Connection failed:', e);
+              return Promise.reject(new DOMException('Failed to connect to RayNeo glasses: ' + e.message, 'NotSupportedError'));
+            }
+          }
+        }
+        // Switch the panel to SBS NOW and wait for the OS to re-arrange the
+        // display: a session created during the switch renders for the stale
+        // 1920-wide resolution. Skipped when "auto mode switch" is off in the
+        // popup (the user controls the panel mode).
+        if (window.__rayneoAutoModeSwitch !== false && globalRayNeo.connected) {
+          const baselineWidth = screen.width;
+          displaySettling = true;
+          displaySettledOnce = false;
+          settlingBaselineWidth = baselineWidth;
+          await globalRayNeo.setStereo(true);
+          await settleDisplayAfterModeChange(baselineWidth);
+          displaySettling = false;
+          displaySettledOnce = true;
+        }
         debugLog('RayNeo WebXR proxy: Using RayNeo for immersive-vr');
         return globalXRSystem.requestSession(mode, options);
       }
@@ -756,6 +871,23 @@ export function initRayNeoWebXR() {
     }
     // NOTE: no createProjectionLayer on purpose — see comment above.
   };
+
+  // Defer fullscreen requests made while the glasses' display transition is
+  // pending: players (DeoVR etc.) call requestFullscreen() themselves the
+  // moment they enter VR - before requestSession resolves - and would
+  // fullscreen at the stale 1920x1080 arrangement. Hold those calls until
+  // the display reports the wide mode, then run them with fresh geometry.
+  const nativeRequestFullscreen = Element.prototype.requestFullscreen;
+  if (nativeRequestFullscreen) {
+    Element.prototype.requestFullscreen = function (...args) {
+      if (!displaySettling || displaySettledOnce) {
+        return nativeRequestFullscreen.apply(this, args);
+      }
+      debugLog('RayNeo polyfill: deferring requestFullscreen() until display transition completes');
+      return settleDisplayAfterModeChange(settlingBaselineWidth)
+        .then(() => nativeRequestFullscreen.apply(this, args));
+    };
+  }
 
   // Patch makeXRCompatible: on a desktop browser with no real XR device,
   // the browser's native makeXRCompatible() can stay pending forever, which

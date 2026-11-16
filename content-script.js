@@ -50,6 +50,14 @@ safeSendMessage({ type: 'GET_STATE' }, (state) => {
   }
 });
 
+// Tell the background a fresh document loaded in this tab: any XR session the
+// previous document had is gone (reload / navigation), so the tab no longer
+// counts as "presenting VR" for the close-the-tab display restore. Top frame
+// only - iframes (ads etc.) load and unload independently of the tab.
+if (window === window.top) {
+  safeSendMessage({ type: 'VR_PAGE_LOADED' });
+}
+
 // Helper to safely call sendResponse
 function safeSendResponse(sendResponse, data) {
   try {
@@ -58,6 +66,17 @@ function safeSendResponse(sendResponse, data) {
     }
   } catch (e) {
     // Extension context invalidated - silently ignore
+  }
+}
+
+// Read the per-site "VR mode" flag. Content scripts share the page's
+// localStorage (same origin), so we can read the flag written by the
+// MAIN-world polyfill directly.
+function getVRForceEnabled() {
+  try {
+    return localStorage.getItem('rayneo-vr-force') === '1';
+  } catch (e) {
+    return false;
   }
 }
 
@@ -107,6 +126,39 @@ try {
         window.postMessage({ type: 'RAYNEO_VRFORCE_REQUEST' }, '*');
         safeSendResponse(sendResponse, { success: true });
       }
+
+      if (message.type === 'VRFORCE_GET_STATE') {
+        // Report the real per-site VR mode state to the popup toggle
+        safeSendResponse(sendResponse, { enabled: getVRForceEnabled() });
+      }
+
+      if (message.type === 'VRFORCE_SET_REQUEST') {
+        // Set the per-site VR mode flag explicitly (popup toggle sends the
+        // desired state), then reload so the site re-runs its VR detection
+        try {
+          localStorage.setItem('rayneo-vr-force', message.enabled ? '1' : '0');
+        } catch (e) {
+          safeSendResponse(sendResponse, { success: false });
+          return;
+        }
+        safeSendResponse(sendResponse, { success: true, enabled: !!message.enabled });
+        setTimeout(() => {
+          try { location.reload(); } catch (e) { /* noop */ }
+        }, 400);
+      }
+
+      if (message.type === 'GET_DEVICE_STATE') {
+        // Ask the MAIN-world driver for the page's real connection state (the
+        // background service worker can lose its in-memory state between
+        // restarts, so the popup reconciles against live pages)
+        window.postMessage({ type: 'RAYNEO_GET_DEVICE_STATE' }, '*');
+      }
+
+      if (message.type === 'RESTORE_2D_REQUEST') {
+        // The tab that presented VR content was closed: switch the glasses
+        // back to 2D if this page can (same origin = same WebHID grant)
+        window.postMessage({ type: 'RAYNEO_RESTORE_2D_REQUEST' }, '*');
+      }
     } catch (e) {
       // Extension context invalidated during message handling
     }
@@ -145,6 +197,38 @@ window.addEventListener('message', (event) => {
 
   if (data.type === 'RAYNEO_DEVICE_DISCONNECTED') {
     safeSendMessage({ type: 'DEVICE_DISCONNECTED' });
+  }
+
+  if (data.type === 'RAYNEO_VR_SESSION_STARTED') {
+    // Register this tab with the background: it is presenting VR content
+    safeSendMessage({ type: 'VR_SESSION_STARTED' });
+  }
+
+  if (data.type === 'RAYNEO_VR_SESSION_ENDED') {
+    // Session ended normally (panel back in 2D) - stop watching this tab
+    safeSendMessage({ type: 'VR_SESSION_ENDED' });
+  }
+
+  if (data.type === 'RAYNEO_RESTORE_2D_RESULT') {
+    safeSendMessage({ type: 'RESTORE_2D_RESULT', success: !!data.success });
+  }
+
+  if (data.type === 'RAYNEO_DEVICE_STATE_RESPONSE') {
+    safeSendMessage({
+      type: 'DEVICE_STATE_FROM_PAGE',
+      connected: !!data.connected,
+      deviceInfo: data.deviceInfo || null
+    });
+  }
+
+  if (data.type === 'RAYNEO_GET_VR_STATUS') {
+    safeSendMessage({ type: 'GET_VR_STATUS' }, (response) => {
+      if (chrome.runtime.lastError || !response) return;
+      window.postMessage({
+        type: 'RAYNEO_VR_STATUS_RESPONSE',
+        active: !!response.active
+      }, '*');
+    });
   }
 });
 

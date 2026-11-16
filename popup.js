@@ -16,7 +16,8 @@ const connectBtn = document.getElementById('connect-btn');
 const recenterBtn = document.getElementById('recenter-btn');
 const entervrBtn = document.getElementById('entervr-btn');
 const yttrackBtn = document.getElementById('yttrack-btn');
-const vrforceBtn = document.getElementById('vrforce-btn');
+const vrforceToggle = document.getElementById('vrforce-toggle');
+const automodeToggle = document.getElementById('automode-toggle');
 const webhidWarning = document.getElementById('webhid-warning');
 
 // Check WebHID support
@@ -33,6 +34,9 @@ function updateUI(state) {
   enabledToggle.checked = state.enabled;
   enabledStatus.textContent = state.enabled ? 'Enabled' : 'Disabled';
   enabledStatus.className = 'status-value ' + (state.enabled ? 'enabled' : 'disabled');
+
+  // Update auto mode switch toggle
+  automodeToggle.checked = state.autoModeSwitch !== false;
 
   // Update connection status
   connectionStatus.textContent = state.connected ? 'Connected' : 'Disconnected';
@@ -75,8 +79,26 @@ function refreshState() {
   });
 }
 
+// The background service worker's in-memory connection state can be stale
+// after Chrome stops/restarts it (MV3 workers die after ~30 s idle). Ask the
+// active tab's page for ground truth: it reports back via
+// DEVICE_STATE_FROM_PAGE, and the resulting STATE_CHANGED broadcast updates
+// this popup through the onMessage listener below.
+function reconcileConnectionState() {
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    const tab = tabs && tabs[0];
+    if (!canMessageTab(tab)) return;
+    chrome.tabs.sendMessage(tab.id, { type: 'GET_DEVICE_STATE' }, () => {
+      // The page answers asynchronously via the background's broadcast;
+      // ignore "content script not loaded" errors here
+      void chrome.runtime.lastError;
+    });
+  });
+}
+
 // Initial state load
 refreshState();
+reconcileConnectionState();
 
 // Poll for orientation updates when connected
 let orientationPollInterval = null;
@@ -121,6 +143,17 @@ enabledToggle.addEventListener('change', () => {
       console.warn('Error setting enabled:', chrome.runtime.lastError.message);
     }
     refreshState();
+  });
+});
+
+// Handle auto mode switch toggle (extension switches the glasses' panel
+// between 2D and SBS automatically when a VR session starts/ends)
+automodeToggle.addEventListener('change', () => {
+  chrome.runtime.sendMessage({
+    type: 'SET_AUTO_MODE_SWITCH',
+    enabled: automodeToggle.checked
+  }, () => {
+    void chrome.runtime.lastError;
   });
 });
 
@@ -222,20 +255,52 @@ yttrackBtn.addEventListener('click', async () => {
   });
 });
 
-// Handle VR mode button (toggle per-site "always offer VR" + reload)
-vrforceBtn.addEventListener('click', async () => {
+// Check the real per-site VR mode state (localStorage flag read by the
+// content script, which shares the page's origin) and reflect it on the toggle
+async function refreshVRForceState() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
   if (!canMessageTab(tab)) {
+    vrforceToggle.disabled = true;
     return;
   }
 
-  chrome.tabs.sendMessage(tab.id, { type: 'VRFORCE_REQUEST' }, (response) => {
-    if (chrome.runtime.lastError) {
-      console.warn('Could not send VR mode request:', chrome.runtime.lastError.message);
+  chrome.tabs.sendMessage(tab.id, { type: 'VRFORCE_GET_STATE' }, (response) => {
+    if (chrome.runtime.lastError || !response) {
+      // Content script not loaded on this page (needs a reload)
+      console.warn('Could not read VR mode state:', chrome.runtime.lastError?.message);
+      vrforceToggle.disabled = true;
       return;
     }
-    // The page toggles its localStorage flag and reloads itself
+    vrforceToggle.disabled = false;
+    vrforceToggle.checked = !!response.enabled;
+  });
+}
+
+// Initial VR mode state load
+refreshVRForceState();
+
+// Handle VR mode toggle (set per-site "always offer VR" explicitly + reload)
+vrforceToggle.addEventListener('change', async () => {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+
+  if (!canMessageTab(tab)) {
+    vrforceToggle.checked = !vrforceToggle.checked;
+    return;
+  }
+
+  const enabled = vrforceToggle.checked;
+
+  chrome.tabs.sendMessage(tab.id, { type: 'VRFORCE_SET_REQUEST', enabled }, (response) => {
+    if (chrome.runtime.lastError || !response || !response.success) {
+      console.warn('Could not set VR mode:', chrome.runtime.lastError?.message);
+      // Revert the toggle if the flag could not be written
+      vrforceToggle.checked = !enabled;
+      return;
+    }
+    // Flag written; the page reloads itself. Re-check the real state afterwards
+    // in case the popup is still open.
+    setTimeout(refreshVRForceState, 1500);
   });
 });
 

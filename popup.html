@@ -5,34 +5,44 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>RayNeo WebXR</title>
   <style>
+    :root {
+      --bg: #0a0a0a;
+      --panel: #141414;
+      --inset: #0f0f0f;
+      --border: #2e2e2e;
+      --border-strong: #4a4a4a;
+      --text: #ededed;
+      --text-dim: #8a8a8a;
+      --text-muted: #555555;
+      --off: #2b2b2b;
+    }
+
     * {
       margin: 0;
       padding: 0;
       box-sizing: border-box;
+      border-radius: 0;
     }
 
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      width: 320px;
-      background: #1a1a2e;
-      color: #eee;
+      font-family: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+      width: 340px;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 12px;
+      line-height: 1.4;
     }
 
     .header {
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-      padding: 16px;
-      text-align: center;
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border);
     }
 
     .header h1 {
-      font-size: 18px;
-      font-weight: 600;
-      margin-bottom: 4px;
-    }
-
-    .header .subtitle {
-      font-size: 12px;
-      opacity: 0.8;
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
     }
 
     .content {
@@ -40,17 +50,17 @@
     }
 
     .status-card {
-      background: #16213e;
-      border-radius: 12px;
-      padding: 16px;
-      margin-bottom: 16px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      padding: 12px;
+      margin-bottom: 12px;
     }
 
     .status-row {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      margin-bottom: 12px;
+      margin-bottom: 10px;
     }
 
     .status-row:last-child {
@@ -58,73 +68,95 @@
     }
 
     .status-label {
-      font-size: 13px;
-      color: #888;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-dim);
     }
 
     .status-value {
-      font-size: 13px;
-      font-weight: 500;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .status-value::before {
+      content: "\25A0\00A0";
+      font-size: 9px;
+      color: var(--text-muted);
     }
 
     .status-value.connected {
-      color: #4ade80;
+      color: var(--text);
+    }
+
+    .status-value.connected::before {
+      color: var(--text);
     }
 
     .status-value.disconnected {
-      color: #f87171;
+      color: var(--text-muted);
     }
 
     .status-value.enabled {
-      color: #4ade80;
+      color: var(--text);
+    }
+
+    .status-value.enabled::before {
+      color: var(--text);
     }
 
     .status-value.disabled {
-      color: #888;
+      color: var(--text-muted);
     }
 
     .device-info {
-      background: #0f172a;
-      border-radius: 8px;
-      padding: 12px;
-      margin-top: 12px;
+      background: var(--inset);
+      border: 1px solid var(--border);
+      padding: 10px;
+      margin-top: 10px;
     }
 
     .device-name {
-      font-size: 14px;
-      font-weight: 600;
-      color: #fff;
-      margin-bottom: 4px;
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--text);
+      margin-bottom: 2px;
     }
 
     .device-id {
-      font-size: 11px;
-      color: #666;
-      font-family: monospace;
+      font-size: 10px;
+      color: var(--text-muted);
+      letter-spacing: 0.06em;
     }
 
     .toggle-container {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      background: #16213e;
-      border-radius: 12px;
-      padding: 16px;
-      margin-bottom: 16px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      padding: 12px;
+      margin-bottom: 12px;
     }
 
     .toggle-label {
-      font-size: 14px;
-      font-weight: 500;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
     }
 
     .toggle {
       position: relative;
-      width: 48px;
-      height: 26px;
+      width: 40px;
+      height: 20px;
+      flex: none;
     }
 
     .toggle input {
+      position: absolute;
       opacity: 0;
       width: 0;
       height: 0;
@@ -133,79 +165,85 @@
     .toggle-slider {
       position: absolute;
       cursor: pointer;
-      top: 0;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      background-color: #374151;
-      transition: 0.3s;
-      border-radius: 26px;
+      inset: 0;
+      background: var(--off);
+      border: 1px solid var(--border-strong);
+      transition: background 0.15s, border-color 0.15s;
     }
 
-    .toggle-slider:before {
+    .toggle-slider::before {
       position: absolute;
       content: "";
-      height: 20px;
-      width: 20px;
-      left: 3px;
-      bottom: 3px;
-      background-color: white;
-      transition: 0.3s;
-      border-radius: 50%;
+      width: 14px;
+      height: 14px;
+      left: 2px;
+      top: 2px;
+      background: var(--text-dim);
+      transition: transform 0.15s, background 0.15s;
     }
 
     .toggle input:checked + .toggle-slider {
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      background: var(--text);
+      border-color: var(--text);
     }
 
-    .toggle input:checked + .toggle-slider:before {
-      transform: translateX(22px);
+    .toggle input:checked + .toggle-slider::before {
+      transform: translateX(20px);
+      background: var(--bg);
+    }
+
+    .toggle input:disabled + .toggle-slider {
+      opacity: 0.35;
+      cursor: not-allowed;
     }
 
     .btn {
       width: 100%;
-      padding: 12px;
-      border: none;
-      border-radius: 8px;
-      font-size: 14px;
+      padding: 10px 12px;
+      border: 1px solid var(--border-strong);
+      background: transparent;
+      color: var(--text);
+      font-family: inherit;
+      font-size: 11px;
       font-weight: 600;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
       cursor: pointer;
-      transition: all 0.2s;
+      transition: background 0.15s, color 0.15s, border-color 0.15s;
       margin-bottom: 8px;
     }
 
-    .btn:last-child {
+    .btn:last-of-type {
       margin-bottom: 0;
     }
 
-    .btn-primary {
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-      color: white;
+    .btn:hover:not(:disabled) {
+      background: var(--text);
+      color: var(--bg);
+      border-color: var(--text);
     }
 
-    .btn-primary:hover {
-      opacity: 0.9;
-      transform: translateY(-1px);
+    .btn:disabled {
+      color: var(--text-muted);
+      border-color: var(--border);
+      cursor: not-allowed;
+    }
+
+    .btn-primary {
+      background: var(--text);
+      color: var(--bg);
+      border-color: var(--text);
+    }
+
+    .btn-primary:hover:not(:disabled) {
+      background: transparent;
+      color: var(--text);
     }
 
     .btn-primary:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-      transform: none;
-    }
-
-    .btn-secondary {
-      background: #374151;
-      color: #fff;
-    }
-
-    .btn-secondary:hover {
-      background: #4b5563;
-    }
-
-    .btn-secondary:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
+      background: var(--off);
+      color: var(--text-muted);
+      border-color: var(--border);
     }
 
     .icon-btn {
@@ -216,33 +254,32 @@
     }
 
     .btn-icon {
-      width: 18px;
-      height: 18px;
+      width: 14px;
+      height: 14px;
       flex: none;
     }
 
     .orientation-display {
-      background: #0f172a;
-      border-radius: 8px;
-      padding: 12px;
-      font-family: monospace;
+      background: var(--inset);
+      border: 1px solid var(--border);
+      padding: 10px;
       font-size: 11px;
-      color: #888;
-      margin-top: 12px;
+      color: var(--text-dim);
+      margin-top: 10px;
     }
 
     .orientation-display .label {
-      color: #667eea;
+      color: var(--text);
       margin-right: 8px;
     }
 
     .warning {
-      background: #7c2d12;
-      color: #fed7aa;
-      padding: 12px;
-      border-radius: 8px;
-      font-size: 12px;
-      margin-bottom: 16px;
+      background: var(--panel);
+      border: 1px solid var(--text);
+      color: var(--text);
+      padding: 10px 12px;
+      font-size: 11px;
+      margin-bottom: 12px;
       display: none;
     }
 
@@ -253,21 +290,26 @@
     .footer {
       padding: 12px 16px;
       text-align: center;
-      font-size: 11px;
-      color: #666;
-      border-top: 1px solid #16213e;
+      font-size: 10px;
+      color: var(--text-muted);
+      border-top: 1px solid var(--border);
+      letter-spacing: 0.06em;
     }
 
     .footer a {
-      color: #667eea;
+      color: var(--text-dim);
       text-decoration: none;
+    }
+
+    .footer a:hover {
+      color: var(--text);
+      text-decoration: underline;
     }
   </style>
 </head>
 <body>
   <div class="header">
     <h1>RayNeo WebXR</h1>
-    <div class="subtitle">Head tracking for WebXR sites</div>
   </div>
 
   <div class="content">
@@ -279,6 +321,22 @@
       <span class="toggle-label">Enable Extension</span>
       <label class="toggle">
         <input type="checkbox" id="enabled-toggle" checked>
+        <span class="toggle-slider"></span>
+      </label>
+    </div>
+
+    <div class="toggle-container">
+      <span class="toggle-label">VR Mode On This Site</span>
+      <label class="toggle">
+        <input type="checkbox" id="vrforce-toggle">
+        <span class="toggle-slider"></span>
+      </label>
+    </div>
+
+    <div class="toggle-container">
+      <span class="toggle-label">Auto Mode Switch</span>
+      <label class="toggle" title="Automatically switch the glasses between 2D and SBS (side-by-side) when a VR session starts and ends">
+        <input type="checkbox" id="automode-toggle" checked>
         <span class="toggle-slider"></span>
       </label>
     </div>
@@ -308,15 +366,15 @@
       Connect RayNeo Glasses
     </button>
 
-    <button id="recenter-btn" class="btn btn-secondary" disabled>
+    <button id="recenter-btn" class="btn" disabled>
       Recenter View
     </button>
 
-    <button id="entervr-btn" class="btn btn-secondary" disabled>
+    <button id="entervr-btn" class="btn" disabled>
       Enter VR (player)
     </button>
 
-    <button id="yttrack-btn" class="btn btn-secondary icon-btn" disabled>
+    <button id="yttrack-btn" class="btn icon-btn" disabled>
       <svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <circle cx="6" cy="15" r="4"/>
         <circle cx="18" cy="15" r="4"/>
@@ -325,10 +383,6 @@
         <path d="M21.5 13 19 7c-.7-1.3-1.5-2-3-2"/>
       </svg>
       <span>YouTube tracking</span>
-    </button>
-
-    <button id="vrforce-btn" class="btn btn-secondary">
-      VR mode on this site (toggle)
     </button>
   </div>
 
