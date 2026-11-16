@@ -637,6 +637,13 @@ class RayNeoXRSession {
     // Set isImmersive as a data property (some apps try to set it)
     this.isImmersive = (mode === 'immersive-vr' || mode === 'immersive-ar');
 
+    // Immersive sessions present side-by-side stereo to the glasses: switch
+    // the panel into SBS mode automatically, and back to 2D when the session
+    // ends (the site's normal playback must not stay split).
+    if (this.isImmersive && this.rayneo.connected) {
+      this.rayneo.setStereo(true).catch(() => {});
+    }
+
     // Start frame loop
     this._startFrameLoop();
   }
@@ -748,6 +755,10 @@ class RayNeoXRSession {
     this.ended = true;
     if (this._animationFrameId) {
       cancelAnimationFrame(this._animationFrameId);
+    }
+    // Restore the glasses' panel to 2D for normal desktop use
+    if (this.isImmersive && this.rayneo.connected) {
+      try { await this.rayneo.setStereo(false); } catch (e) { /* noop */ }
     }
     this._dispatchEvent('end', { session: this });
   }
